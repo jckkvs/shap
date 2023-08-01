@@ -1,10 +1,10 @@
-import pickle
-#import types
+
 import inspect
 import logging
-#import warnings
-import numpy as np
+import pickle
+
 import cloudpickle
+import numpy as np
 
 log = logging.getLogger('shap')
 
@@ -19,7 +19,7 @@ class Serializable():
 
     @classmethod
     def load(cls, in_file, instantiate=True):
-        """ This is meant to be overriden by subclasses and called with super.
+        """ This is meant to be overridden by subclasses and called with super.
 
         We return constructor argument values when not being instantiated. Since there are no
         constructor arguments for the Serializable class we just return an empty dictionary.
@@ -30,7 +30,7 @@ class Serializable():
 
     @classmethod
     def _instantiated_load(cls, in_file, **kwargs):
-        """ This is meant to be overriden by subclasses and called with super.
+        """ This is meant to be overridden by subclasses and called with super.
 
         We return constructor argument values (we have no values to load in this abstract class).
         """

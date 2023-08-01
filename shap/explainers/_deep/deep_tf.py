@@ -1,9 +1,12 @@
-import numpy as np
 import warnings
-from .._explainer import Explainer
+
+import numpy as np
 from packaging import version
-from ..tf_utils import _get_session, _get_graph, _get_model_inputs, _get_model_output
-keras = None
+
+from ...utils._exceptions import DimensionError
+from .._explainer import Explainer
+from ..tf_utils import _get_graph, _get_model_inputs, _get_model_output, _get_session
+
 tf = None
 tf_ops = None
 tf_backprop = None
@@ -23,7 +26,10 @@ def custom_record_gradient(op_name, inputs, attrs, results):
     if op_name == "ResourceGather" and inputs[1].dtype == tf.int32:
         inputs[1].__dict__["_dtype"] = tf.float32
         reset_input = True
-    out = tf_backprop._record_gradient("shap_"+op_name, inputs, attrs, results)
+    try:
+        out = tf_backprop._record_gradient("shap_"+op_name, inputs, attrs, results)
+    except AttributeError:
+        out = tf_backprop.record_gradient("shap_"+op_name, inputs, attrs, results)
 
     if reset_input:
         inputs[1].__dict__["_dtype"] = tf.int32
@@ -32,8 +38,8 @@ def custom_record_gradient(op_name, inputs, attrs, results):
 
 class TFDeep(Explainer):
     """
-    Using tf.gradients to implement the backgropagation was
-    inspired by the gradient based implementation approach proposed by Ancona et al, ICLR 2018. Note
+    Using tf.gradients to implement the backpropagation was
+    inspired by the gradient-based implementation approach proposed by Ancona et al, ICLR 2018. Note
     that this package does not currently use the reveal-cancel rule for ReLu units proposed in DeepLIFT.
     """
 
@@ -42,7 +48,7 @@ class TFDeep(Explainer):
 
         Note that the complexity of the method scales linearly with the number of background data
         samples. Passing the entire training dataset as `data` will give very accurate expected
-        values, but be unreasonably expensive. The variance of the expectation estimates scale by
+        values, but will be computationally expensive. The variance of the expectation estimates scales by
         roughly 1/sqrt(N) for N background data samples. So 100 samples will give a good estimate,
         and 1000 samples a very good estimate of the expected values.
 
@@ -72,26 +78,23 @@ class TFDeep(Explainer):
             have a value of False during predictions (and hence explanations).
 
         """
-        # try and import keras and tensorflow
+        # try to import tensorflow
         global tf, tf_ops, tf_backprop, tf_execute, tf_gradients_impl
         if tf is None:
-            from tensorflow.python.framework import ops as tf_ops # pylint: disable=E0611
-            from tensorflow.python.ops import gradients_impl as tf_gradients_impl # pylint: disable=E0611
             from tensorflow.python.eager import backprop as tf_backprop
             from tensorflow.python.eager import execute as tf_execute
+            from tensorflow.python.framework import (
+                ops as tf_ops,  # pylint: disable=E0611
+            )
+            from tensorflow.python.ops import (
+                gradients_impl as tf_gradients_impl,  # pylint: disable=E0611
+            )
             if not hasattr(tf_gradients_impl, "_IsBackpropagatable"):
                 from tensorflow.python.ops import gradients_util as tf_gradients_impl
             import tensorflow as tf
             if version.parse(tf.__version__) < version.parse("1.4.0"):
                 warnings.warn("Your TensorFlow version is older than 1.4.0 and not supported.")
-        global keras
-        if keras is None:
-            try:
-                import keras
-                warnings.warn("keras is no longer supported, please use tf.keras instead.")
-            except:
-                pass
-        
+
         if version.parse(tf.__version__) >= version.parse("2.4.0"):
             warnings.warn("Your TensorFlow version is newer than 2.4.0 and so graph support has been removed in eager mode and some static graphs may not be supported. See PR #1483 for discussion.")
 
@@ -118,7 +121,7 @@ class TFDeep(Explainer):
             self.multi_input = False
             if type(self.model_inputs) != list:
                 self.model_inputs = [self.model_inputs]
-        if type(data) != list and (hasattr(data, '__call__')==False):
+        if type(data) != list and (hasattr(data, "__call__") is False):
             data = [data]
         self.data = data
 
@@ -153,8 +156,8 @@ class TFDeep(Explainer):
             if not tf.executing_eagerly():
                 self.expected_value = self.run(self.model_output, self.model_inputs, self.data).mean(0)
             else:
-                if type(self.model)is tuple:
-                    sel.fModel(cnn.inputs, cnn.get_layer(theNameYouWant).outputs)
+                #if type(self.model)is tuple:
+                #    self.fModel(cnn.inputs, cnn.get_layer(theNameYouWant).outputs)
                 self.expected_value = tf.reduce_mean(self.model(self.data), 0)
 
         if not tf.executing_eagerly():
@@ -170,7 +173,7 @@ class TFDeep(Explainer):
             if noutputs is not None:
                 self.phi_symbolics = [None for i in range(noutputs)]
             else:
-                raise Exception("The model output tensor to be explained cannot have a static shape in dim 1 of None!")
+                raise DimensionError("The model output tensor to be explained cannot have a static shape in dim 1 of None!")
 
     def _get_model_output(self, model):
         if len(model.layers[-1]._inbound_nodes) == 0:
@@ -215,7 +218,7 @@ class TFDeep(Explainer):
         """ Return which inputs of this operation are variable (i.e. depend on the model inputs).
         """
         if op not in self._vinputs:
-            out = np.zeros(len(op.inputs), dtype=np.bool)
+            out = np.zeros(len(op.inputs), dtype=bool)
             for i,t in enumerate(op.inputs):
                 out[i] = t.name in self.between_tensors
             self._vinputs[op] = out
@@ -328,8 +331,8 @@ class TFDeep(Explainer):
                         diffs -= output_phis[l][i].sum(axis=tuple(range(1, output_phis[l][i].ndim)))
                 assert np.abs(diffs).max() < 1e-2, "The SHAP explanations do not sum up to the model's output! This is either because of a " \
                                                    "rounding error or because an operator in your computation graph was not fully supported. If " \
-                                                   "the sum difference of %f is significant compared the scale of your model outputs please post " \
-                                                   "as a github issue, with a reproducable example if possible so we can debug it." % np.abs(diffs).max()
+                                                   "the sum difference of %f is significant compared to the scale of your model outputs, please post " \
+                                                   "as a github issue, with a reproducible example so we can debug it." % np.abs(diffs).max()
 
         if not self.multi_output:
             return output_phis[0]
@@ -359,7 +362,10 @@ class TFDeep(Explainer):
                     v = tf.constant(data, dtype=self.model_inputs[i].dtype)
                     inputs.append(v)
                 final_out = out(inputs)
-                tf_execute.record_gradient = tf_backprop._record_gradient
+                try:
+                    tf_execute.record_gradient = tf_backprop._record_gradient
+                except AttributeError:
+                    tf_execute.record_gradient = tf_backprop.record_gradient
 
                 return final_out
             return self.execute_with_overridden_gradients(anon)
@@ -368,7 +374,7 @@ class TFDeep(Explainer):
         """ Passes a gradient op creation request to the correct handler.
         """
         type_name = op.type[5:] if op.type.startswith("shap_") else op.type
-        out = op_handlers[type_name](self, op, *grads) # we cut off the shap_ prefex before the lookup
+        out = op_handlers[type_name](self, op, *grads) # we cut off the shap_ prefix before the lookup
         return out
 
     def execute_with_overridden_gradients(self, f):

@@ -1,21 +1,14 @@
-import types
-import copy
-import inspect
-from ..utils import MaskedModel
-import numpy as np
-import warnings
-import time
-from tqdm.auto import tqdm
 import queue
-from ..utils import assert_import, record_import_error, safe_isinstance, make_masks, OpChain
-from .. import Explanation
-from .. import maskers
-from ._explainer import Explainer
-from .. import links
-import cloudpickle
-import pickle
-from ..maskers import Masker
+import time
+
+import numpy as np
+from numba import njit
+from tqdm.auto import tqdm
+
+from .. import Explanation, links
 from ..models import Model
+from ..utils import MaskedModel, OpChain, make_masks, safe_isinstance
+from ._explainer import Explainer
 
 # .shape[0] messes up pylint a lot here
 # pylint: disable=unsubscriptable-object
@@ -32,7 +25,7 @@ class Partition(Explainer):
         PartitionExplainer has two particularly nice properties: 1) PartitionExplainer is
         model-agnostic but when using a balanced partition tree only has quadradic exact runtime
         (in term of the number of input features). This is in contrast to the exponential exact
-        runtime of KernalExplainer or SamplingExplainer. 2) PartitionExplainer always assigns to groups of
+        runtime of KernelExplainer or SamplingExplainer. 2) PartitionExplainer always assigns to groups of
         correlated features the credit that set of features would have had if treated as a group. This
         means if the hierarchical clustering given to PartitionExplainer groups correlated features
         together, then feature correlations are "accounted for" ... in the sense that the total credit assigned
@@ -147,14 +140,14 @@ class Partition(Explainer):
             # else:
             fixed_context = None
         elif fixed_context not in [0, 1, None]:
-            raise Exception("Unknown fixed_context value passed (must be 0, 1 or None): %s" %fixed_context)
+            raise ValueError("Unknown fixed_context value passed (must be 0, 1 or None): %s" %fixed_context)
 
         # build a masked version of the model for the current input sample
         fm = MaskedModel(self.model, self.masker, self.link, self.linearize_link, *row_args)
 
         # make sure we have the base value and current value outputs
         M = len(fm)
-        m00 = np.zeros(M, dtype=np.bool)
+        m00 = np.zeros(M, dtype=bool)
         # if not fixed background or no base value assigned then compute base value for a row
         if self._curr_base_value is None or not getattr(self.masker, "fixed_background", False):
             self._curr_base_value = fm(m00.reshape(1, -1), zero_index=0)[0] # the zero index param tells the masked model what the baseline is
@@ -191,20 +184,7 @@ class Partition(Explainer):
         # drop the interaction terms down onto self.values
         self.values[:] = self.dvalues
 
-        def lower_credit(i, value=0):
-            if i < M:
-                self.values[i] += value
-                return
-            li = int(self._clustering[i-M,0])
-            ri = int(self._clustering[i-M,1])
-            group_size = int(self._clustering[i-M,3])
-            lsize = int(self._clustering[li-M,3]) if li >= M else 1
-            rsize = int(self._clustering[ri-M,3]) if ri >= M else 1
-            assert lsize+rsize == group_size
-            self.values[i] += value
-            lower_credit(li, self.values[i] * lsize / group_size)
-            lower_credit(ri, self.values[i] * rsize / group_size)
-        lower_credit(len(self.dvalues) - 1)
+        lower_credit(len(self.dvalues) - 1, 0, M, self.values, self._clustering)
 
         return {
             "values": self.values[:M].copy(),
@@ -226,9 +206,9 @@ class Partition(Explainer):
 
         #f = self._reshaped_model
         #r = self.masker
-        #masks = np.zeros(2*len(inds)+1, dtype=np.int)
+        #masks = np.zeros(2*len(inds)+1, dtype=int)
         M = len(fm)
-        m00 = np.zeros(M, dtype=np.bool)
+        m00 = np.zeros(M, dtype=bool)
         #f00 = fm(m00.reshape(1,-1))[0]
         base_value = f00
         #f11 = fm(~m00.reshape(1,-1))[0]
@@ -365,9 +345,9 @@ class Partition(Explainer):
 
         #f = self._reshaped_model
         #r = self.masker
-        #masks = np.zeros(2*len(inds)+1, dtype=np.int)
+        #masks = np.zeros(2*len(inds)+1, dtype=int)
         M = len(fm)
-        m00 = np.zeros(M, dtype=np.bool)
+        m00 = np.zeros(M, dtype=bool)
         #f00 = fm(m00.reshape(1,-1))[0]
         base_value = f00
         #f11 = fm(~m00.reshape(1,-1))[0]
@@ -485,22 +465,22 @@ class Partition(Explainer):
                 if context is None or context == 0 or ignore_context:
                     self.dvalues[ind] += (f11 - f10 - f01 + f00) * weight # leave the interaction effect on the internal node
 
-                    # recurse on the left node with zero context, flip the context for all decendents if we are ignoring it
+                    # recurse on the left node with zero context, flip the context for all descendents if we are ignoring it
                     args = (m00, f00, f10, lind, new_weight, 0 if context == 1 else context)
                     q.put((-np.max(np.abs(f10 - f00)) * new_weight, np.random.randn(), args))
 
-                    # recurse on the right node with zero context, flip the context for all decendents if we are ignoring it
+                    # recurse on the right node with zero context, flip the context for all descendents if we are ignoring it
                     args = (m00, f00, f01, rind, new_weight, 0 if context == 1 else context)
                     q.put((-np.max(np.abs(f01 - f00)) * new_weight, np.random.randn(), args))
 
                 if context is None or context == 1 or ignore_context:
                     self.dvalues[ind] -= (f11 - f10 - f01 + f00) * weight # leave the interaction effect on the internal node
 
-                    # recurse on the left node with one context, flip the context for all decendents if we are ignoring it
+                    # recurse on the left node with one context, flip the context for all descendents if we are ignoring it
                     args = (m01, f01, f11, lind, new_weight, 1 if context == 0 else context)
                     q.put((-np.max(np.abs(f11 - f01)) * new_weight, np.random.randn(), args))
 
-                    # recurse on the right node with one context, flip the context for all decendents if we are ignoring it
+                    # recurse on the right node with one context, flip the context for all descendents if we are ignoring it
                     args = (m10, f10, f11, rind, new_weight, 1 if context == 0 else context)
                     q.put((-np.max(np.abs(f11 - f10)) * new_weight, np.random.randn(), args))
 
@@ -519,9 +499,9 @@ class Partition(Explainer):
 
     #     #f = self._reshaped_model
     #     #r = self.masker
-    #     #masks = np.zeros(2*len(inds)+1, dtype=np.int)
+    #     #masks = np.zeros(2*len(inds)+1, dtype=int)
     #     M = len(fm)
-    #     m00 = np.zeros(M, dtype=np.bool)
+    #     m00 = np.zeros(M, dtype=bool)
     #     #f00 = fm(m00.reshape(1,-1))[0]
     #     base_value = f00
     #     #f11 = fm(~m00.reshape(1,-1))[0]
@@ -659,7 +639,7 @@ class Partition(Explainer):
     #             if fixed_context is None or fixed_context == 1:
     #                 self.dvalues[ind] -= (f11 - f10 - f01 + f00) * weight # leave the interaction effect on the internal node
 
-                    
+
     #                 # recurse on the left node with one context
     #                 args = (m01, f01, f11, lind, new_weight)
     #                 q.put((-np.max(np.abs(f11 - f01)) * new_weight, np.random.randn(), args))
@@ -683,3 +663,18 @@ def output_indexes_len(output_indexes):
         return int(output_indexes[8:-2])
     elif not isinstance(output_indexes, str):
         return len(output_indexes)
+
+@njit
+def lower_credit(i, value, M, values, clustering):
+    if i < M:
+        values[i] += value
+        return
+    li = int(clustering[i-M,0])
+    ri = int(clustering[i-M,1])
+    group_size = int(clustering[i-M,3])
+    lsize = int(clustering[li-M,3]) if li >= M else 1
+    rsize = int(clustering[ri-M,3]) if ri >= M else 1
+    assert lsize+rsize == group_size
+    values[i] += value
+    lower_credit(li, values[i] * lsize / group_size, M, values, clustering)
+    lower_credit(ri, values[i] * rsize / group_size, M, values, clustering)

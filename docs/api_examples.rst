@@ -5,9 +5,9 @@
 API Examples
 ----------------
 
-These examples parallel the namespace structure of SHAP. Each object or function in SHAP has a 
+These examples parallel the namespace structure of SHAP. Each object or function in SHAP has a
 corresponding example notebook here that demonstrates its API usage. The source notebooks
-are `available on GitHub <https://github.com/slundberg/shap/tree/master/notebooks/api_examples>`_.
+are `available on GitHub <https://github.com/shap/shap/tree/master/notebooks/api_examples>`_.
 
 
 .. _explainers_examples:
@@ -41,6 +41,8 @@ maskers
 models
 ======
 .. Examples for members of :ref:`shap.models <models_api>`.
+
+Work in progress.
 
 .. toctree::
     :glob:
